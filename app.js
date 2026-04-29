@@ -44,7 +44,7 @@
    *    mas NÃO substitui autenticação real.
    *    Gere um valor aleatório com: openssl rand -hex 32
    */
-  var HMAC_SECRET = 'COLE_SEU_HMAC_SECRET_AQUI';
+  var HMAC_SECRET = '578ce3e6969abe5fd77a269b1f3ea5dabfed56cfa5165bd2d20de91cfaacf0fd';
 
   var POLL_INTERVAL_MS   = 5000;   // 5 segundos entre cada polling
   var POLL_MAX_ATTEMPTS  = 120;    // 10 minutos máximo (120 × 5s)
