@@ -5,8 +5,20 @@
  * ═══════════════════════════════════════════════════════════
  *
  *  ⚠  CONFIGURAÇÃO OBRIGATÓRIA:
- *  Substitua APPS_SCRIPT_URL pela URL do seu Apps Script
- *  após fazer o deploy como Web App.
+ *  1. Substitua APPS_SCRIPT_URL pela URL do seu Apps Script
+ *     após fazer o deploy como Web App.
+ *  2. Substitua HMAC_SECRET por um valor aleatório (hex 32+ bytes)
+ *     e configure o MESMO valor no PropertiesService do Apps Script
+ *     com a chave HMAC_SECRET.
+ *
+ *  SEGURANÇA:
+ *  - Todas as requisições ao backend usam POST com payload
+ *    assinado via HMAC-SHA256 (Web Crypto API nativa).
+ *  - Cada requisição inclui timestamp (ts) com janela de 5 min.
+ *  - Session token emitido pelo backend (action 'iniciar') vincula
+ *    o fluxo form → pagamento → agendamento a uma sessão verificável.
+ *  - O segredo HMAC é visível no source; protege contra
+ *    manipulação casual, não substitui autenticação real.
  */
 
 (function () {
@@ -19,9 +31,20 @@
    * Menu: Implantar → Nova implantação → Web App → Copiar URL
    * Formato: https://script.google.com/macros/s/XXXX/exec
    */
-  var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxVA2dPRFuV5xapKvqBoj7179Orm1h9FSLjzwcyTHTpdHRC0BXm4kFtRxcXDnZLecBv/exec';
+  var APPS_SCRIPT_URL = 'COLE_SUA_URL_DO_APPS_SCRIPT_AQUI';
 
   var PAYMENT_URL = 'https://payment-link-v3.pagar.me/pl_a3JqYmygNDV6G7Bceilp6j7ERnlxG9WO';
+
+  /**
+   * Segredo HMAC — deve ser idêntico ao configurado no PropertiesService
+   * do Apps Script (chave: HMAC_SECRET).
+   *
+   * ⚠  Este valor é visível no código-fonte do frontend.
+   *    Ele protege contra manipulação casual e bots oportunistas,
+   *    mas NÃO substitui autenticação real.
+   *    Gere um valor aleatório com: openssl rand -hex 32
+   */
+  var HMAC_SECRET = 'COLE_SEU_HMAC_SECRET_AQUI';
 
   var POLL_INTERVAL_MS   = 5000;   // 5 segundos entre cada polling
   var POLL_MAX_ATTEMPTS  = 120;    // 10 minutos máximo (120 × 5s)
@@ -30,14 +53,15 @@
   /* ─── Estado ───────────────────────────────────────────── */
 
   var state = {
-    nome:     '',
-    cpf:      '',
-    ddd:      '',
-    telefone: '',
-    step:     'form',
-    pollTimer:    null,
-    pollAttempts: 0,
-    countdownTimer: null
+    nome:         '',
+    cpf:          '',
+    ddd:          '',
+    telefone:     '',
+    sessionToken: '',
+    step:         'form',
+    pollTimer:        null,
+    pollAttempts:     0,
+    countdownTimer:   null
   };
 
   /* ─── DOM ──────────────────────────────────────────────── */
@@ -123,6 +147,60 @@
       el.classList.remove('show');
       setTimeout(function () { el.remove(); }, 400);
     }, 4000);
+  }
+
+  /* ─── HMAC — Assinatura de Requisição ────────────────────── */
+
+  /**
+   * Calcula HMAC-SHA256 usando Web Crypto API (nativo do browser).
+   * Retorna Promise<string> com o hex digest.
+   */
+  function computeHMAC(message) {
+    var enc = new TextEncoder();
+    return crypto.subtle.importKey(
+      'raw', enc.encode(HMAC_SECRET),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    ).then(function (key) {
+      return crypto.subtle.sign('HMAC', key, enc.encode(message));
+    }).then(function (sigBuf) {
+      var bytes = new Uint8Array(sigBuf);
+      var hex = '';
+      for (var i = 0; i < bytes.length; i++) {
+        hex += ('0' + bytes[i].toString(16)).slice(-2);
+      }
+      return hex;
+    });
+  }
+
+  /**
+   * Cria o body assinado para envio via POST.
+   * Formato: { payload: "<json-stringificado>", sig: "<hmac-hex>" }
+   * Inclui timestamp (ts) para proteção anti-replay.
+   * Retorna Promise<string>.
+   */
+  function buildSignedBody(data) {
+    data.ts = Date.now();
+    var payloadStr = JSON.stringify(data);
+
+    return computeHMAC(payloadStr).then(function (sig) {
+      return JSON.stringify({ payload: payloadStr, sig: sig });
+    });
+  }
+
+  /**
+   * Envia POST assinado ao Apps Script.
+   * Content-Type: text/plain evita preflight CORS.
+   * Retorna Promise<Response>.
+   */
+  function signedFetch(data) {
+    return buildSignedBody(data).then(function (body) {
+      return fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain' },
+        body: body
+      });
+    });
   }
 
   /* ─── Máscaras de Input ────────────────────────────────── */
@@ -290,11 +368,7 @@
     state.telefone = dom.inputTelefone.value.replace(/\D/g, '');
 
     // Persistir em sessionStorage para sobreviver a refresh
-    try {
-      sessionStorage.setItem('mediquo_form', JSON.stringify({
-        nome: state.nome, cpf: state.cpf, ddd: state.ddd, telefone: state.telefone
-      }));
-    } catch (_) {}
+    saveFormToSession();
 
     // Preencher resumo
     dom.confirmNome.textContent     = state.nome;
@@ -303,6 +377,37 @@
 
     showStep('confirm');
     startCountdown();
+  }
+
+  /* ─── Persistência sessionStorage ──────────────────────── */
+
+  function saveFormToSession() {
+    try {
+      sessionStorage.setItem('mediquo_form', JSON.stringify({
+        nome: state.nome, cpf: state.cpf, ddd: state.ddd, telefone: state.telefone
+      }));
+    } catch (_) {}
+  }
+
+  function saveSessionToken() {
+    try {
+      sessionStorage.setItem('mediquo_session_token', state.sessionToken);
+    } catch (_) {}
+  }
+
+  function loadSessionToken() {
+    try {
+      return sessionStorage.getItem('mediquo_session_token') || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function clearSessionToken() {
+    try {
+      sessionStorage.removeItem('mediquo_session_token');
+    } catch (_) {}
+    state.sessionToken = '';
   }
 
   /* ─── Countdown de 10 segundos ─────────────────────────── */
@@ -332,7 +437,77 @@
 
   /* ─── Step 2 → Step 3 (Pagamento) ──────────────────────── */
 
+  /**
+   * Ao clicar "Seguir para pagamento":
+   * 1. Tenta reutilizar session token existente (sessionStorage)
+   * 2. Se não existe ou falhou, solicita novo token ao backend (action 'iniciar')
+   * 3. Somente após obter token válido, abre o iframe de pagamento
+   */
   function goToPayment() {
+    var btnText = dom.btnPagar.querySelector('.btn-text');
+
+    // ── Desabilitar botão durante a solicitação ──
+    dom.btnPagar.disabled = true;
+    btnText.textContent = 'Preparando sessão...';
+
+    // ── Tentar reutilizar token existente ──
+    var existingToken = loadSessionToken();
+    if (existingToken) {
+      state.sessionToken = existingToken;
+      proceedToPaymentStep();
+      return;
+    }
+
+    // ── Solicitar novo session token ao backend ──
+    requestNewSession(function onSuccess() {
+      proceedToPaymentStep();
+    }, function onError(errMsg) {
+      showToast(errMsg || 'Erro ao iniciar sessão. Tente novamente.', 'error');
+      dom.btnPagar.disabled = false;
+      btnText.textContent = 'Seguir para pagamento';
+    });
+  }
+
+  /**
+   * Solicita session token ao backend via action 'iniciar'.
+   * O token é armazenado em state.sessionToken e em sessionStorage.
+   *
+   * @param {Function} onSuccess - Callback em caso de sucesso
+   * @param {Function} onError   - Callback em caso de erro (recebe mensagem)
+   */
+  function requestNewSession(onSuccess, onError) {
+    signedFetch({
+      action:   'iniciar',
+      cpf:      state.cpf,
+      nome:     state.nome,
+      ddd:      state.ddd,
+      telefone: state.telefone
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        if (data && data.status === 'success' && data.session_token) {
+          state.sessionToken = data.session_token;
+          saveSessionToken();
+          onSuccess();
+        } else {
+          throw new Error(data.message || 'Resposta inesperada do servidor');
+        }
+      })
+      .catch(function (err) {
+        console.error('[requestNewSession] Erro:', err.message);
+        clearSessionToken();
+        onError('Erro ao iniciar sessão: ' + err.message);
+      });
+  }
+
+  /**
+   * Efetivamente abre o step de pagamento (iframe + polling).
+   * Chamado somente após session token válido.
+   */
+  function proceedToPaymentStep() {
     showStep('payment');
 
     // Configurar iframe
@@ -379,13 +554,13 @@
       return;
     }
 
-    var url = APPS_SCRIPT_URL +
-      '?action=status' +
-      '&cpf=' + encodeURIComponent(state.cpf) +
-      '&ddd=' + encodeURIComponent(state.ddd) +
-      '&telefone=' + encodeURIComponent(state.telefone);
-
-    fetch(url, { redirect: 'follow' })
+    signedFetch({
+      action:        'status',
+      cpf:           state.cpf,
+      ddd:           state.ddd,
+      telefone:      state.telefone,
+      session_token: state.sessionToken
+    })
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -394,6 +569,16 @@
         if (data && data.found === true) {
           stopPolling();
           goToSchedule();
+        }
+        // Se sessão expirou, tentar renovar silenciosamente
+        if (data && data.message && data.message.indexOf('Sessão') !== -1) {
+          console.warn('[polling] Sessão expirada. Tentando renovar...');
+          clearSessionToken();
+          requestNewSession(function () {
+            console.log('[polling] Sessão renovada com sucesso');
+          }, function () {
+            console.warn('[polling] Falha ao renovar sessão');
+          });
         }
       })
       .catch(function (err) {
@@ -408,18 +593,28 @@
     dom.btnCheckManual.disabled = true;
     dom.btnCheckManual.textContent = 'Verificando...';
 
-    var url = APPS_SCRIPT_URL +
-      '?action=status' +
-      '&cpf=' + encodeURIComponent(state.cpf) +
-      '&ddd=' + encodeURIComponent(state.ddd) +
-      '&telefone=' + encodeURIComponent(state.telefone);
-
-    fetch(url, { redirect: 'follow' })
+    signedFetch({
+      action:        'status',
+      cpf:           state.cpf,
+      ddd:           state.ddd,
+      telefone:      state.telefone,
+      session_token: state.sessionToken
+    })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data && data.found === true) {
           stopPolling();
           goToSchedule();
+        } else if (data && data.message && data.message.indexOf('Sessão') !== -1) {
+          // Sessão expirada — tentar renovar e refazer check
+          clearSessionToken();
+          requestNewSession(function () {
+            // Refazer check com novo token
+            manualCheck();
+          }, function () {
+            showToast('Sessão expirada. Por favor, reinicie o processo.', 'error');
+          });
+          return; // Evitar restaurar botão prematuramente
         } else {
           showToast('Pagamento ainda não confirmado. Aguarde alguns instantes.', 'error');
         }
@@ -451,14 +646,14 @@
     dom.btnAgendar.disabled = true;
     dom.agendarError.textContent = '';
 
-    var url = APPS_SCRIPT_URL +
-      '?action=agendar' +
-      '&cpf=' + encodeURIComponent(state.cpf) +
-      '&nome=' + encodeURIComponent(state.nome) +
-      '&ddd=' + encodeURIComponent(state.ddd) +
-      '&telefone=' + encodeURIComponent(state.telefone);
-
-    fetch(url, { redirect: 'follow' })
+    signedFetch({
+      action:        'agendar',
+      cpf:           state.cpf,
+      nome:          state.nome,
+      ddd:           state.ddd,
+      telefone:      state.telefone,
+      session_token: state.sessionToken
+    })
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -481,6 +676,18 @@
           dom.btnAgendar.onclick = function () {
             window.open(data.link, '_blank', 'noopener,noreferrer');
           };
+        } else if (data && data.message && data.message.indexOf('Sessão') !== -1) {
+          // Sessão expirada — tentar renovar e refazer
+          clearSessionToken();
+          requestNewSession(function () {
+            btnText.style.display = '';
+            btnLoader.style.display = 'none';
+            dom.btnAgendar.disabled = false;
+            showToast('Sessão renovada. Clique novamente para gerar o link.', 'success');
+          }, function () {
+            throw new Error('Sessão expirada. Por favor, reinicie o processo.');
+          });
+          return;
         } else {
           throw new Error(data.message || 'Erro desconhecido');
         }
@@ -511,6 +718,12 @@
         dom.inputCPF.value      = maskCPF(data.cpf);
         dom.inputDDD.value      = data.ddd;
         dom.inputTelefone.value = maskPhone(data.telefone);
+
+        // Restaurar session token se existir
+        var storedToken = loadSessionToken();
+        if (storedToken) {
+          state.sessionToken = storedToken;
+        }
 
         return true;
       }
