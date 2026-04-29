@@ -31,7 +31,7 @@
    * Menu: Implantar → Nova implantação → Web App → Copiar URL
    * Formato: https://script.google.com/macros/s/XXXX/exec
    */
-  var APPS_SCRIPT_URL = 'COLE_SUA_URL_DO_APPS_SCRIPT_AQUI';
+  var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxVA2dPRFuV5xapKvqBoj7179Orm1h9FSLjzwcyTHTpdHRC0BXm4kFtRxcXDnZLecBv/exec';
 
   var PAYMENT_URL = 'https://payment-link-v3.pagar.me/pl_a3JqYmygNDV6G7Bceilp6j7ERnlxG9WO';
 
@@ -49,6 +49,10 @@
   var POLL_INTERVAL_MS   = 5000;   // 5 segundos entre cada polling
   var POLL_MAX_ATTEMPTS  = 120;    // 10 minutos máximo (120 × 5s)
   var COUNTDOWN_SECONDS  = 10;
+
+  var FETCH_MAX_RETRIES  = 3;      // Retries para chamadas ao backend
+  var FETCH_RETRY_BASE   = 1500;   // Backoff exponencial: 1.5s, 3s, 6s
+  var FETCH_RETRY_MAX    = 8000;   // Teto do backoff
 
   /* ─── Estado ───────────────────────────────────────────── */
 
@@ -201,6 +205,111 @@
         body: body
       });
     });
+  }
+
+  /* ─── Frontend Logger ──────────────────────────────────── */
+
+  /**
+   * Logger estruturado para o frontend.
+   * Formato: [HH:MM:SS.mmm][LEVEL][fnName] message {details}
+   *
+   * @param {string} level   - 'INFO', 'WARN', 'ERROR'
+   * @param {string} fnName  - Nome da função
+   * @param {string} message - Mensagem
+   * @param {Object} [details] - Dados extras (opcional)
+   */
+  function frontLog(level, fnName, message, details) {
+    var now = new Date();
+    var ts = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
+    var line = '[' + ts + '][' + level + '][' + fnName + '] ' + message;
+    if (details) line += ' ' + JSON.stringify(details);
+
+    if (level === 'ERROR') {
+      console.error(line);
+    } else if (level === 'WARN') {
+      console.warn(line);
+    } else {
+      console.log(line);
+    }
+  }
+
+  /* ─── signedFetchWithRetry ─────────────────────────────── */
+
+  /**
+   * Wrapper com retry para signedFetch.
+   * Retenta em: network error, HTTP 5xx, 408, 429.
+   * NÃO retenta em: 4xx (exceto 408/429) — erro do cliente.
+   * Usa backoff exponencial com teto.
+   *
+   * @param {Object}  data     - Dados a enviar
+   * @param {string}  label    - Nome da operação (para logs)
+   * @param {Object}  [opts]   - Opções
+   * @param {number}  [opts.maxRetries]  - Override de max retries
+   * @param {boolean} [opts.skipRetry]   - Se true, não retenta (polling)
+   * @returns {Promise<Object>} JSON parseado da resposta
+   */
+  function signedFetchWithRetry(data, label, opts) {
+    opts = opts || {};
+    var maxRetries = opts.skipRetry ? 1 : (opts.maxRetries || FETCH_MAX_RETRIES);
+    var attempt = 0;
+
+    function tryOnce() {
+      attempt++;
+      var attemptStart = Date.now();
+
+      frontLog('INFO', label, 'Tentativa ' + attempt + '/' + maxRetries, { action: data.action });
+
+      return signedFetch(data)
+        .then(function (response) {
+          var elapsed = Date.now() - attemptStart;
+          var status = response.status;
+
+          frontLog('INFO', label, 'Resposta recebida', { status: status, elapsed: elapsed });
+
+          // HTTP 2xx → parsear JSON
+          if (response.ok) {
+            return response.json().then(function (json) {
+              if (attempt > 1) {
+                frontLog('INFO', label, 'Sucesso após ' + attempt + ' tentativas', { elapsed: elapsed });
+              }
+              return json;
+            });
+          }
+
+          // HTTP retryable (5xx, 408, 429)
+          if ((status >= 500 || status === 408 || status === 429) && attempt < maxRetries) {
+            var delay = Math.min(FETCH_RETRY_BASE * Math.pow(2, attempt - 1), FETCH_RETRY_MAX);
+            frontLog('WARN', label, 'Erro retryable HTTP ' + status + ' — aguardando ' + delay + 'ms', { tentativa: attempt });
+            return new Promise(function (resolve) { setTimeout(resolve, delay); }).then(tryOnce);
+          }
+
+          // HTTP não-retryable (4xx) ou retries esgotados → tentar extrair JSON e propagar
+          return response.json().catch(function () {
+            return { status: 'error', message: 'HTTP ' + status };
+          }).then(function (json) {
+            frontLog('ERROR', label, 'Falha HTTP ' + status + ' (tentativa ' + attempt + '/' + maxRetries + ')', { body: json });
+            throw { httpError: true, status: status, data: json };
+          });
+        })
+        .catch(function (err) {
+          // Se é um httpError já tratado, propagar
+          if (err && err.httpError) throw err;
+
+          var elapsed = Date.now() - attemptStart;
+
+          // Erro de rede → retry se possível
+          if (attempt < maxRetries) {
+            var delay = Math.min(FETCH_RETRY_BASE * Math.pow(2, attempt - 1), FETCH_RETRY_MAX);
+            frontLog('WARN', label, 'Erro de rede — aguardando ' + delay + 'ms', { error: err.message, tentativa: attempt, elapsed: elapsed });
+            return new Promise(function (resolve) { setTimeout(resolve, delay); }).then(tryOnce);
+          }
+
+          frontLog('ERROR', label, 'TODAS as tentativas falharam', { error: err.message, tentativas: maxRetries, elapsed: elapsed });
+          throw err;
+        });
+    }
+
+    return tryOnce();
   }
 
   /* ─── Máscaras de Input ────────────────────────────────── */
@@ -449,19 +558,24 @@
     // ── Desabilitar botão durante a solicitação ──
     dom.btnPagar.disabled = true;
     btnText.textContent = 'Preparando sessão...';
+    frontLog('INFO', 'goToPayment', 'Iniciando fluxo de pagamento');
 
     // ── Tentar reutilizar token existente ──
     var existingToken = loadSessionToken();
     if (existingToken) {
       state.sessionToken = existingToken;
+      frontLog('INFO', 'goToPayment', 'Reutilizando session token existente', { token: existingToken.substring(0, 8) + '***' });
       proceedToPaymentStep();
       return;
     }
+
+    frontLog('INFO', 'goToPayment', 'Nenhum token existente — solicitando novo ao backend');
 
     // ── Solicitar novo session token ao backend ──
     requestNewSession(function onSuccess() {
       proceedToPaymentStep();
     }, function onError(errMsg) {
+      frontLog('ERROR', 'goToPayment', 'Falha ao obter session token', { error: errMsg });
       showToast(errMsg || 'Erro ao iniciar sessão. Tente novamente.', 'error');
       dom.btnPagar.disabled = false;
       btnText.textContent = 'Seguir para pagamento';
@@ -476,30 +590,32 @@
    * @param {Function} onError   - Callback em caso de erro (recebe mensagem)
    */
   function requestNewSession(onSuccess, onError) {
-    signedFetch({
+    frontLog('INFO', 'requestNewSession', 'Solicitando novo session token ao backend');
+
+    signedFetchWithRetry({
       action:   'iniciar',
       cpf:      state.cpf,
       nome:     state.nome,
       ddd:      state.ddd,
       telefone: state.telefone
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
+    }, 'requestNewSession')
       .then(function (data) {
         if (data && data.status === 'success' && data.session_token) {
           state.sessionToken = data.session_token;
           saveSessionToken();
+          frontLog('INFO', 'requestNewSession', 'Session token obtido com sucesso', { token: data.session_token.substring(0, 8) + '***' });
           onSuccess();
         } else {
-          throw new Error(data.message || 'Resposta inesperada do servidor');
+          var msg = (data && data.message) || 'Resposta inesperada do servidor';
+          frontLog('ERROR', 'requestNewSession', 'Resposta inválida do backend', { response: data });
+          throw new Error(msg);
         }
       })
       .catch(function (err) {
-        console.error('[requestNewSession] Erro:', err.message);
+        var msg = (err && err.data && err.data.message) || err.message || 'Erro desconhecido';
+        frontLog('ERROR', 'requestNewSession', 'Falha ao obter session token', { error: msg });
         clearSessionToken();
-        onError('Erro ao iniciar sessão: ' + err.message);
+        onError('Erro ao iniciar sessão: ' + msg);
       });
   }
 
@@ -508,6 +624,7 @@
    * Chamado somente após session token válido.
    */
   function proceedToPaymentStep() {
+    frontLog('INFO', 'proceedToPaymentStep', 'Abrindo iframe de pagamento e iniciando polling');
     showStep('payment');
 
     // Configurar iframe
@@ -533,6 +650,7 @@
   function startPolling() {
     state.pollAttempts = 0;
     clearInterval(state.pollTimer);
+    frontLog('INFO', 'startPolling', 'Iniciando polling de pagamento', { intervalo: POLL_INTERVAL_MS, maxTentativas: POLL_MAX_ATTEMPTS });
     checkPaymentStatus(); // Primeira chamada imediata
     state.pollTimer = setInterval(checkPaymentStatus, POLL_INTERVAL_MS);
   }
@@ -540,6 +658,7 @@
   function stopPolling() {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
+    frontLog('INFO', 'stopPolling', 'Polling interrompido', { tentativasRealizadas: state.pollAttempts });
   }
 
   function checkPaymentStatus() {
@@ -547,6 +666,7 @@
 
     if (state.pollAttempts > POLL_MAX_ATTEMPTS) {
       stopPolling();
+      frontLog('WARN', 'checkPaymentStatus', 'Tempo de verificação esgotado', { tentativas: state.pollAttempts });
       if (dom.pollingStatus) {
         dom.pollingStatus.innerHTML =
           '<span style="color:var(--color-warning);">Tempo de verificação esgotado. Use o botão abaixo para tentar novamente.</span>';
@@ -554,36 +674,39 @@
       return;
     }
 
-    signedFetch({
+    frontLog('INFO', 'checkPaymentStatus', 'Polling tentativa ' + state.pollAttempts + '/' + POLL_MAX_ATTEMPTS);
+
+    signedFetchWithRetry({
       action:        'status',
       cpf:           state.cpf,
       ddd:           state.ddd,
       telefone:      state.telefone,
       session_token: state.sessionToken
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
+    }, 'checkPaymentStatus', { skipRetry: true })
       .then(function (data) {
         if (data && data.found === true) {
           stopPolling();
+          frontLog('INFO', 'checkPaymentStatus', 'Pagamento encontrado!', { tentativa: state.pollAttempts });
           goToSchedule();
+          return;
         }
         // Se sessão expirou, tentar renovar silenciosamente
         if (data && data.message && data.message.indexOf('Sessão') !== -1) {
-          console.warn('[polling] Sessão expirada. Tentando renovar...');
+          frontLog('WARN', 'checkPaymentStatus', 'Sessão expirada — tentando renovar', { tentativa: state.pollAttempts });
           clearSessionToken();
           requestNewSession(function () {
-            console.log('[polling] Sessão renovada com sucesso');
+            frontLog('INFO', 'checkPaymentStatus', 'Sessão renovada com sucesso');
           }, function () {
-            console.warn('[polling] Falha ao renovar sessão');
+            frontLog('WARN', 'checkPaymentStatus', 'Falha ao renovar sessão');
           });
+        } else {
+          frontLog('INFO', 'checkPaymentStatus', 'Pagamento ainda não confirmado', { tentativa: state.pollAttempts });
         }
       })
       .catch(function (err) {
         // Silencioso — apenas log. O polling continuará tentando.
-        console.warn('[polling] Erro na tentativa ' + state.pollAttempts + ':', err.message);
+        var msg = (err && err.data && err.data.message) || (err && err.message) || 'Erro desconhecido';
+        frontLog('WARN', 'checkPaymentStatus', 'Erro no polling (continuando)', { error: msg, tentativa: state.pollAttempts });
       });
   }
 
@@ -592,34 +715,40 @@
   function manualCheck() {
     dom.btnCheckManual.disabled = true;
     dom.btnCheckManual.textContent = 'Verificando...';
+    frontLog('INFO', 'manualCheck', 'Verificação manual iniciada');
 
-    signedFetch({
+    signedFetchWithRetry({
       action:        'status',
       cpf:           state.cpf,
       ddd:           state.ddd,
       telefone:      state.telefone,
       session_token: state.sessionToken
-    })
-      .then(function (r) { return r.json(); })
+    }, 'manualCheck')
       .then(function (data) {
         if (data && data.found === true) {
           stopPolling();
+          frontLog('INFO', 'manualCheck', 'Pagamento confirmado!');
           goToSchedule();
         } else if (data && data.message && data.message.indexOf('Sessão') !== -1) {
           // Sessão expirada — tentar renovar e refazer check
+          frontLog('WARN', 'manualCheck', 'Sessão expirada — renovando');
           clearSessionToken();
           requestNewSession(function () {
             // Refazer check com novo token
+            frontLog('INFO', 'manualCheck', 'Sessão renovada — refazendo verificação');
             manualCheck();
           }, function () {
             showToast('Sessão expirada. Por favor, reinicie o processo.', 'error');
           });
           return; // Evitar restaurar botão prematuramente
         } else {
+          frontLog('INFO', 'manualCheck', 'Pagamento ainda não confirmado');
           showToast('Pagamento ainda não confirmado. Aguarde alguns instantes.', 'error');
         }
       })
-      .catch(function () {
+      .catch(function (err) {
+        var msg = (err && err.data && err.data.message) || (err && err.message) || 'Erro desconhecido';
+        frontLog('ERROR', 'manualCheck', 'Falha na verificação', { error: msg });
         showToast('Erro ao verificar. Tente novamente.', 'error');
       })
       .finally(function () {
@@ -631,6 +760,7 @@
   /* ─── Step 3 → Step 4 (Agendamento) ────────────────────── */
 
   function goToSchedule() {
+    frontLog('INFO', 'goToSchedule', 'Transicionando para tela de agendamento');
     showStep('schedule');
     showToast('Pagamento confirmado!', 'success');
   }
@@ -645,21 +775,19 @@
     btnLoader.style.display = 'inline-flex';
     dom.btnAgendar.disabled = true;
     dom.agendarError.textContent = '';
+    frontLog('INFO', 'requestSchedulingLink', 'Solicitando link de agendamento');
 
-    signedFetch({
+    signedFetchWithRetry({
       action:        'agendar',
       cpf:           state.cpf,
       nome:          state.nome,
       ddd:           state.ddd,
       telefone:      state.telefone,
       session_token: state.sessionToken
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
+    }, 'requestSchedulingLink')
       .then(function (data) {
         if (data && data.status === 'success' && data.link) {
+          frontLog('INFO', 'requestSchedulingLink', 'Link gerado com sucesso', { link: data.link });
           showToast('Link gerado! Redirecionando...', 'success');
           // Abrir em nova aba
           setTimeout(function () {
@@ -678,22 +806,28 @@
           };
         } else if (data && data.message && data.message.indexOf('Sessão') !== -1) {
           // Sessão expirada — tentar renovar e refazer
+          frontLog('WARN', 'requestSchedulingLink', 'Sessão expirada — renovando');
           clearSessionToken();
           requestNewSession(function () {
             btnText.style.display = '';
             btnLoader.style.display = 'none';
             dom.btnAgendar.disabled = false;
+            frontLog('INFO', 'requestSchedulingLink', 'Sessão renovada — clique novamente');
             showToast('Sessão renovada. Clique novamente para gerar o link.', 'success');
           }, function () {
             throw new Error('Sessão expirada. Por favor, reinicie o processo.');
           });
           return;
         } else {
-          throw new Error(data.message || 'Erro desconhecido');
+          var msg = (data && data.message) || 'Erro desconhecido';
+          frontLog('ERROR', 'requestSchedulingLink', 'Resposta de erro do backend', { response: data });
+          throw new Error(msg);
         }
       })
       .catch(function (err) {
-        dom.agendarError.textContent = 'Erro: ' + err.message + '. Tente novamente.';
+        var msg = (err && err.data && err.data.message) || err.message || 'Erro desconhecido';
+        frontLog('ERROR', 'requestSchedulingLink', 'Falha ao gerar link', { error: msg });
+        dom.agendarError.textContent = 'Erro: ' + msg + '. Tente novamente.';
         btnText.style.display = '';
         btnLoader.style.display = 'none';
         dom.btnAgendar.disabled = false;
