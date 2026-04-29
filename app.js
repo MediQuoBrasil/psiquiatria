@@ -19,7 +19,7 @@
    * Menu: Implantar → Nova implantação → Web App → Copiar URL
    * Formato: https://script.google.com/macros/s/XXXX/exec
    */
-  var APPS_SCRIPT_URL = 'COLE_SUA_URL_DO_APPS_SCRIPT_AQUI';
+  var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxVA2dPRFuV5xapKvqBoj7179Orm1h9FSLjzwcyTHTpdHRC0BXm4kFtRxcXDnZLecBv/exec';
 
   var PAYMENT_URL = 'https://payment-link-v3.pagar.me/pl_a3JqYmygNDV6G7Bceilp6j7ERnlxG9WO';
 
