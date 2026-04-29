@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Mediquo — Consulta Psiquiatria</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ─── Tema ───────────────────────────────────────────── -->
+  <button class="theme-toggle" id="themeToggle" type="button" aria-label="Alternar tema">
+    <svg id="iconMoon" class="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    </svg>
+    <svg id="iconSun" class="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+      <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/>
+      <line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/>
+      <line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+    </svg>
+  </button>
+
+  <div class="container">
+
+    <!-- ─── Header ─────────────────────────────────────── -->
+    <header class="header">
+      <div class="header-glow"></div>
+      <h1 class="header-title">Consulta Avulsa Psiquiatria</h1>
+      <p class="header-sub">Preencha seus dados, efetue o pagamento e agende sua consulta</p>
+    </header>
+
+    <!-- ═══ STEP 1 — Formulário ═══════════════════════════ -->
+    <section id="stepForm" class="card form-card">
+      <div class="step-indicator">
+        <span class="step-dot active"></span>
+        <span class="step-line"></span>
+        <span class="step-dot"></span>
+        <span class="step-line"></span>
+        <span class="step-dot"></span>
+        <span class="step-line"></span>
+        <span class="step-dot"></span>
+      </div>
+      <p class="step-label">Etapa 1 de 4 — Seus dados</p>
+
+      <div class="field-group">
+        <label class="field-label" for="inputNome">Nome completo</label>
+        <input type="text" id="inputNome" class="field-input"
+               placeholder="Seu nome completo" autocomplete="name" maxlength="120">
+        <span class="field-error" id="errorNome"></span>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="inputCPF">CPF</label>
+        <input type="text" id="inputCPF" class="field-input"
+               placeholder="000.000.000-00" inputmode="numeric" maxlength="14" autocomplete="off">
+        <span class="field-error" id="errorCPF"></span>
+      </div>
+
+      <div class="field-row">
+        <div class="field-group field-ddd">
+          <label class="field-label" for="inputDDD">DDD</label>
+          <input type="text" id="inputDDD" class="field-input"
+                 placeholder="34" inputmode="numeric" maxlength="2" autocomplete="off">
+          <span class="field-error" id="errorDDD"></span>
+        </div>
+        <div class="field-group field-phone">
+          <label class="field-label" for="inputTelefone">Telefone</label>
+          <input type="text" id="inputTelefone" class="field-input"
+                 placeholder="99775-8727" inputmode="numeric" maxlength="10" autocomplete="tel-local">
+          <span class="field-error" id="errorTelefone"></span>
+        </div>
+      </div>
+
+      <button type="button" id="btnContinuar" class="btn btn-primary">
+        <span class="btn-text">Continuar</span>
+      </button>
+    </section>
+
+    <!-- ═══ STEP 2 — Confirmação ══════════════════════════ -->
+    <section id="stepConfirm" class="card" style="display:none;">
+      <div class="step-indicator">
+        <span class="step-dot done"></span>
+        <span class="step-line done"></span>
+        <span class="step-dot active"></span>
+        <span class="step-line"></span>
+        <span class="step-dot"></span>
+        <span class="step-line"></span>
+        <span class="step-dot"></span>
+      </div>
+      <p class="step-label">Etapa 2 de 4 — Confirmação</p>
+
+      <div class="confirm-warning">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span>Por gentileza, confirme todos os seus dados. Caso você tenha colocado seu CPF ou telefone errado, o processo irá falhar.</span>
+      </div>
+
+      <div class="confirm-data">
+        <div class="confirm-row">
+          <span class="confirm-label">Nome:</span>
+          <span class="confirm-value" id="confirmNome"></span>
+        </div>
+        <div class="confirm-row">
+          <span class="confirm-label">CPF:</span>
+          <span class="confirm-value" id="confirmCPF"></span>
+        </div>
+        <div class="confirm-row">
+          <span class="confirm-label">Telefone:</span>
+          <span class="confirm-value" id="confirmTelefone"></span>
+        </div>
+      </div>
+
+      <div class="confirm-actions">
+        <button type="button" id="btnVoltarForm" class="btn btn-outline btn-sm">Voltar e corrigir</button>
+        <button type="button" id="btnPagar" class="btn btn-primary btn-sm" disabled>
+          <span class="btn-text">Seguir para pagamento (<span id="countdown">10</span>s)</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ═══ STEP 3 — Pagamento ════════════════════════════ -->
+    <section id="stepPayment" class="card" style="display:none;">
+      <div class="step-indicator">
+        <span class="step-dot done"></span>
+        <span class="step-line done"></span>
+        <span class="step-dot done"></span>
+        <span class="step-line done"></span>
+        <span class="step-dot active"></span>
+        <span class="step-line"></span>
+        <span class="step-dot"></span>
+      </div>
+      <p class="step-label">Etapa 3 de 4 — Pagamento</p>
+
+      <div class="iframe-container" id="iframeContainer">
+        <div class="iframe-loading" id="iframeLoading">
+          <span class="spinner"></span>
+          <span>Carregando página de pagamento...</span>
+        </div>
+        <iframe id="paymentIframe"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation"
+                allow="payment"
+                title="Pagamento Pagar.me"></iframe>
+      </div>
+
+      <div class="iframe-fallback" id="iframeFallback" style="display:none;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span>Se a página de pagamento não carregar,
+          <a id="paymentLink" href="#" target="_blank" rel="noopener noreferrer">clique aqui para abrir em nova aba</a>.
+        </span>
+      </div>
+
+      <div class="polling-status" id="pollingStatus">
+        <span class="spinner spinner-sm"></span>
+        <span>Aguardando confirmação do pagamento...</span>
+      </div>
+
+      <button type="button" id="btnCheckManual" class="btn btn-outline btn-sm btn-full-mobile">
+        Já paguei, verificar agora
+      </button>
+    </section>
+
+    <!-- ═══ STEP 4 — Agendamento ══════════════════════════ -->
+    <section id="stepSchedule" class="card" style="display:none;">
+      <div class="step-indicator">
+        <span class="step-dot done"></span>
+        <span class="step-line done"></span>
+        <span class="step-dot done"></span>
+        <span class="step-line done"></span>
+        <span class="step-dot done"></span>
+        <span class="step-line done"></span>
+        <span class="step-dot active"></span>
+      </div>
+      <p class="step-label">Etapa 4 de 4 — Agendamento</p>
+
+      <div class="success-box">
+        <svg class="success-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+          <polyline points="22 4 12 14.01 9 11.01"/>
+        </svg>
+        <h2 class="success-title">Pagamento confirmado!</h2>
+        <p class="success-text">Agora clique no botão abaixo para escolher o melhor horário para sua consulta. O link expira em 2 horas.</p>
+      </div>
+
+      <button type="button" id="btnAgendar" class="btn btn-primary">
+        <span class="btn-text">Agende sua consulta</span>
+        <span class="btn-loader" style="display:none;"><span class="spinner"></span> Gerando link...</span>
+      </button>
+
+      <div id="agendarError" class="field-error" style="text-align:center;margin-top:0.5rem;"></div>
+    </section>
+
+    <!-- ─── Footer ─────────────────────────────────────── -->
+    <footer class="footer">
+      &copy; <span id="yearFooter"></span> Mediquo Saúde Conectada
+    </footer>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
